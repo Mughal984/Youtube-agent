@@ -19,8 +19,8 @@ def run(cmd):
 # ---------------- 1. Script from Gemini ----------------
 def gemini(prompt):
     key = os.environ["GEMINI_API_KEY"]
-    models = [os.environ.get("GEMINI_MODEL"), "gemini-flash-latest", "gemini-2.5-flash"]
-    last = None
+    models = [os.environ.get("GEMINI_MODEL"), "gemini-3.8-flash", "gemini-3.7-flash", "gemini-flash-latest", "gemini-3.5-flash"]
+    last = []
     for m in [x for x in models if x]:
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
@@ -29,7 +29,7 @@ def gemini(prompt):
                   "generationConfig": {"responseMimeType": "application/json", "temperature": 1.0}},
             timeout=120)
         if not r.ok:
-            last = r.text[:300]
+            last.append(f"{m}: {r.text[:150]}")
             continue
         try:
             parts = r.json()["candidates"][0]["content"]["parts"]
@@ -37,8 +37,8 @@ def gemini(prompt):
             text = re.sub(r"^```(?:json)?|```$", "", text.strip()).strip()
             return json.loads(text)
         except Exception as e:
-            last = e
-    raise RuntimeError(f"Gemini failed: {last}")
+            last.append(f"{m}: bad reply {e}")
+    raise RuntimeError("Gemini failed: " + " | ".join(last))
 
 
 def make_prompt(used):

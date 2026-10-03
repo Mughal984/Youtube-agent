@@ -51,7 +51,9 @@ Return ONLY JSON with this shape:
  "title": "catchy Urdu title, max 70 characters",
  "description": "2-3 lines Urdu description",
  "tags": ["8 to 12 tags, mix Urdu and English"],
- "scenes": [{{"text": "1-2 short Urdu sentences, max 20 words, spoken by narrator", "search": "2-4 English words for a real photo search"}}]}}
+ "scenes": [{{"text": "1-2 short Urdu sentences, max 20 words, shown as on-screen caption", "speech": "same sentences rewritten ONLY for text-to-speech", "search": "2-4 English words for a real photo search"}}]}}
+Rules for "speech": pure Urdu script only; write every number in Urdu words (for example 280 becomes دو سو اسی); no digits, no English words, no abbreviations or symbols;
+spell foreign names the way an Urdu speaker pronounces them; use short sentences with ۔ and ، so the voice pauses naturally.
 Make exactly 7 scenes, about 45 seconds in total. Scene 1 is a strong hook question.
 The last scene asks viewers to follow and subscribe for daily new history. Use Urdu script (not Roman)."""
 
@@ -106,7 +108,7 @@ def get_photo(q, path):
 # ---------------- 3. Voice ----------------
 def tts(text, path):
     async def go():
-        await edge_tts.Communicate(text, VOICE).save(str(path))
+        await edge_tts.Communicate(text, VOICE, rate="-6%").save(str(path))
     for attempt in range(3):
         try:
             asyncio.run(go())
@@ -147,7 +149,7 @@ def make_bg(photo, out):
 
 
 def caption_png(text, path, font_path):
-    f = ImageFont.truetype(font_path, 62)
+    f = ImageFont.truetype(font_path, 62, layout_engine=ImageFont.Layout.BASIC)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     shaped = lambda s: get_display(arabic_reshaper.reshape(s))
@@ -203,7 +205,7 @@ def main():
         if credit and credit not in credits:
             credits.append(credit)
         audio = TMP / f"a{i}.mp3"
-        tts(sc["text"], audio)
+        tts(sc.get("speech") or sc["text"], audio)
         bg, cap, clip = TMP / f"bg{i}.jpg", TMP / f"cap{i}.png", TMP / f"s{i}.mp4"
         make_bg(photo if credit else None, bg)
         caption_png(sc["text"], cap, font)

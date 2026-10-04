@@ -51,10 +51,10 @@ Return ONLY JSON with this shape:
  "title": "catchy Urdu title, max 70 characters",
  "description": "2-3 lines Urdu description",
  "tags": ["8 to 12 tags, mix Urdu and English"],
- "scenes": [{{"text": "1-2 short Urdu sentences, max 20 words, shown as on-screen caption", "speech": "same sentences rewritten ONLY for text-to-speech", "search": "2-4 English words for a real photo search"}}]}}
+ "scenes": [{{"text": "1-2 short Urdu sentences, 12 to 16 words, shown as on-screen caption", "speech": "same sentences rewritten ONLY for text-to-speech", "search": "2-4 English words for a real photo search"}}]}}
 Rules for "speech": pure Urdu script only; write every number in Urdu words (for example 280 becomes دو سو اسی); no digits, no English words, no abbreviations or symbols;
 spell foreign names the way an Urdu speaker pronounces them; use short sentences with ۔ and ، so the voice pauses naturally.
-Make exactly 7 scenes, about 45 seconds in total. Scene 1 is a strong hook question.
+Make exactly 9 scenes. The whole video must be about 55 seconds when read aloud (never over 58). Scene 1 is a strong hook question.
 The last scene asks viewers to follow and subscribe for daily new history. Use Urdu script (not Roman)."""
 
 
@@ -197,6 +197,16 @@ def main():
     print("Topic:", data["topic"])
 
     font = find_font()
+    # voice first, so we know the real length
+    for i, sc in enumerate(scenes):
+        sc["audio"] = TMP / f"a{i}.mp3"
+        tts(sc.get("speech") or sc["text"], sc["audio"])
+        sc["dur"] = duration(sc["audio"])
+    # keep the final video under 59 seconds: drop middle scenes if too long
+    while len(scenes) > 4 and sum(sc["dur"] + 0.5 for sc in scenes) > 58.5:
+        scenes.pop(len(scenes) // 2)
+    print("Video length: %.1f s" % sum(sc["dur"] + 0.5 for sc in scenes))
+
     clips, credits = [], []
     for i, sc in enumerate(scenes):
         print(f"Scene {i + 1}/{len(scenes)}")
@@ -204,12 +214,10 @@ def main():
         credit = get_photo(sc["search"], photo)
         if credit and credit not in credits:
             credits.append(credit)
-        audio = TMP / f"a{i}.mp3"
-        tts(sc.get("speech") or sc["text"], audio)
         bg, cap, clip = TMP / f"bg{i}.jpg", TMP / f"cap{i}.png", TMP / f"s{i}.mp4"
         make_bg(photo if credit else None, bg)
         caption_png(sc["text"], cap, font)
-        build_scene(bg, cap, audio, duration(audio), clip)
+        build_scene(bg, cap, sc["audio"], sc["dur"], clip)
         clips.append(clip)
 
     lst = TMP / "list.txt"

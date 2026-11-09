@@ -24,13 +24,13 @@ def run(cmd):
 def gemini(prompt):
     import time
     err = None
-    for attempt in range(6):
+    for attempt in range(5):
         try:
             return gemini_once(prompt)
-        except RuntimeError as e:
+        except (RuntimeError, requests.exceptions.RequestException) as e:
             err = e
-            wait = 30 * (attempt + 1)
-            print(f"Gemini busy, retrying in {wait}s ({attempt + 1}/6)")
+            wait = 20 * (attempt + 1)
+            print(f"Gemini busy or slow ({str(e)[:120]}), retrying in {wait}s ({attempt + 1}/5)")
             time.sleep(wait)
     raise err
 
@@ -40,13 +40,18 @@ def gemini_once(prompt):
     models = [os.environ.get("GEMINI_MODEL"), "gemini-3.8-flash", "gemini-3.7-flash", "gemini-flash-latest", "gemini-3.5-flash"]
     last = []
     for m in [x for x in models if x]:
-        r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
-            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-            json={"contents": [{"parts": [{"text": prompt}]}],
-                  "generationConfig": {"responseMimeType": "application/json", "temperature": 1.0,
-                                       "maxOutputTokens": 16000}},
-            timeout=180)
+        try:
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+                headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"responseMimeType": "application/json", "temperature": 1.0,
+                                           "maxOutputTokens": 16000}},
+                timeout=120)
+        except requests.exceptions.RequestException as e:
+            last.append(f"{m}: no reply ({type(e).__name__})")
+            print(f"Gemini model {m} did not reply, trying the next one")
+            continue
         if not r.ok:
             last.append(f"{m}: {r.text[:150]}")
             continue

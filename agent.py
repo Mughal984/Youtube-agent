@@ -1,5 +1,8 @@
-"""Daily YouTube agent: Gemini script -> Urdu voice -> real photos -> ~3 min video -> YouTube upload."""
-import os, re, json, random, asyncio, pathlib, subprocess, datetime, time, shutil
+"""Daily YouTube agent: Gemini script -> Urdu voice -> real photos -> ~3 min video -> YouTube upload.
+Topic: history of famous mosques around the world. Photos must be of the same mosque as the topic."""
+
+import os, re, json, random, asyncio, pathlib, subprocess, datetime, time, shutil, unicodedata
+
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import arabic_reshaper
@@ -10,19 +13,40 @@ W, H, FPS = 1080, 1920, 30
 OUT, TMP = pathlib.Path("out"), pathlib.Path("tmp")
 UA = {"User-Agent": "youtube-agent/1.0 (personal educational project)"}
 VOICE = os.environ.get("VOICE", "ur-PK-AsadNeural")
+NUM_SCENES = 26      # about 6.5 seconds per scene -> about 170 seconds
+MAX_SECONDS = 175.0  # hard limit, stays under 3 minutes
+USED_URLS = set()    # avoid the same photo twice in one video
 
-NUM_SCENES = 26          # about 6.5 seconds per scene -> about 170 seconds
-MAX_SECONDS = 175.0      # hard limit, stays under 3 minutes
-USED_URLS = set()        # avoid the same photo twice in one video
+GENERIC_WORDS = {"mosque", "masjid", "great", "grand", "central", "jama", "jamia", "jame", "djamaa",
+                 "national", "state", "new", "old", "royal", "city", "the", "and", "al", "el"}
 
 
 def run(cmd):
     subprocess.run(cmd, check=True)
 
 
+def norm(s):
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9 ]+", " ", s.lower())
+
+
+def name_keys(mosque):
+    """Distinctive words of the mosque name + city, used to check that a photo is really of it."""
+    keys = []
+    for w in norm(mosque).split():
+        if len(w) >= 4 and w not in GENERIC_WORDS and w not in keys:
+            keys.append(w)
+    return keys
+
+
+def matches(text, keys):
+    t = " " + norm(text) + " "
+    return any(k in t for k in keys)
+
+
 # ---------------- 1. Script from Gemini ----------------
 def gemini(prompt):
-    import time
     err = None
     for attempt in range(5):
         try:
@@ -66,31 +90,38 @@ def gemini_once(prompt):
 
 
 def make_prompt(used):
-    return f"""You write scripts for a YouTube channel in URDU about interesting facts and history
-(Pakistan, Islamic history, world history, surprising true facts). Videos are about 3 minutes long.
-Pick ONE new topic. Do NOT repeat these earlier topics: {used}.
-Rules: only well-established, true facts; no politics, no sectarian or controversial claims; if unsure, choose another topic.
+    return f"""You write scripts for a YouTube channel in URDU about the HISTORY OF FAMOUS MOSQUES around the world
+(for example Masjid al-Haram, Masjid al-Nabawi, Al-Aqsa Mosque, Great Mosque of Cordoba, Blue Mosque Istanbul, Badshahi Mosque Lahore,
+Faisal Mosque Islamabad, Sheikh Zayed Grand Mosque, Great Mosque of Djenne, Al-Qarawiyyin Fez, Sultan Qaboos Grand Mosque Muscat,
+Umayyad Mosque Damascus, Wazir Khan Mosque, Jama Masjid Delhi, Al-Azhar Cairo, Selimiye Mosque). Videos are about 3 minutes long.
+Pick ONE new mosque. Do NOT repeat these earlier topics: {used}.
+Rules: only well-established, true facts (who built it, when, why, architecture, famous events, how it looks today);
+no politics, no sectarian or controversial claims; if unsure about a fact, choose another mosque.
 Tell it as a story with a clear flow: strong hook, background, the main events in order, surprising details, and a closing lesson.
-Every scene must add NEW information; never repeat a fact. Use a different photo search in every scene.
+Every scene must add NEW information; never repeat a fact.
 Return ONLY JSON with this shape:
-{{"topic": "short English topic",
- "title": "catchy Urdu title, max 70 characters",
- "description": "3-4 lines Urdu description",
- "tags": ["8 to 12 tags, mix Urdu and English"],
- "scenes": [{{"text": "1-2 short Urdu sentences, 12 to 16 words, shown as on-screen caption", "speech": "same sentences rewritten ONLY for text-to-speech", "search": "specific English photo search, 2-4 words", "search2": "broader English fallback search, 2-3 words"}}]}}
-Photo search rules: "search" must name a concrete, photographable subject that fits that scene (a specific place, building, artifact, landscape or object, with its proper name, for example "Al-Qarawiyyin mosque Fez"); "search2" is a broader fallback (for example "Fez Morocco old city").
-Never search for abstract ideas, never search only a person's name, and avoid modern people, offices or classrooms.
+{{"mosque": "exact English name and city, for example Badshahi Mosque, Lahore",
+"topic": "same as mosque",
+"title": "catchy Urdu title, max 70 characters",
+"description": "3-4 lines Urdu description",
+"tags": ["8 to 12 tags, mix Urdu and English"],
+"scenes": [{{"text": "1-2 short Urdu sentences, 12 to 16 words, shown as on-screen caption", "speech": "same sentences rewritten ONLY for text-to-speech", "search": "mosque name + city + one view word, for example Badshahi Mosque Lahore courtyard", "search2": "mosque name + city only, for example Badshahi Mosque Lahore"}}]}}
+Photo search rules (very important): the photo of EVERY scene must show THIS mosque, never another place.
+"search" must always start with the mosque's proper English name and city, followed by one view word
+(minaret, dome, courtyard, entrance, gate, interior, prayer hall, exterior, night, aerial, facade, mihrab).
+Use a different view word in different scenes. "search2" is only the mosque name and city.
+Even when a scene talks about a ruler, a battle or an event, search for the mosque building itself, never a person, a map, a modern office or an unrelated place.
 Rules for "speech": pure Urdu script only; write every number in Urdu words (for example 280 becomes دو سو اسی); no digits, no English words, no abbreviations or symbols;
 spell foreign names the way an Urdu speaker pronounces them; use short sentences with ۔ and ، so the voice pauses naturally.
 Make exactly {NUM_SCENES} scenes. The whole video must be about 165 seconds when read aloud (never over 175). Scene 1 is a strong hook question.
-The last scene asks viewers to follow and subscribe for daily new history. Use Urdu script (not Roman)."""
+The last scene asks viewers to follow and subscribe for daily new mosque history. Use Urdu script (not Roman)."""
 
 
-# ---------------- 2. Real photos ----------------
-def commons_photo(q):
+# ---------------- 2. Real photos (must match the mosque) ----------------
+def commons_photo(q, keys):
     r = requests.get("https://commons.wikimedia.org/w/api.php", headers=UA, timeout=60, params={
         "action": "query", "format": "json", "generator": "search", "gsrsearch": q + " filetype:bitmap",
-        "gsrnamespace": 6, "gsrlimit": 12, "prop": "imageinfo",
+        "gsrnamespace": 6, "gsrlimit": 20, "prop": "imageinfo",
         "iiprop": "url|mime|size|extmetadata", "iiurlwidth": 1400})
     if not r.ok:
         time.sleep(3)
@@ -111,31 +142,41 @@ def commons_photo(q):
         lic = md.get("LicenseShortName", {}).get("value", "")
         if not re.search(r"CC|public domain|PD", lic, re.I) or re.search(r"-N[CD]", lic):
             continue
+        # the photo must really be of this mosque: its title, description or categories must name it
+        hay = " ".join([p.get("title", ""),
+                        re.sub("<[^>]+>", " ", md.get("ObjectName", {}).get("value", "")),
+                        re.sub("<[^>]+>", " ", md.get("ImageDescription", {}).get("value", "")),
+                        md.get("Categories", {}).get("value", "")])
+        if keys and not matches(hay, keys):
+            continue
         artist = re.sub("<[^>]+>", "", md.get("Artist", {}).get("value", "Unknown")).strip()
         credit = f"{p['title']} by {artist} ({lic}) {ii.get('descriptionurl', '')}"
         return url, credit
     return None
 
 
-def pixabay_photo(q):
+def pixabay_photo(q, keys):
     for orient in ("vertical", "all"):
         r = requests.get("https://pixabay.com/api/", timeout=60, params={
             "key": os.environ["PIXABAY_API_KEY"], "q": q, "image_type": "photo",
-            "per_page": 8, "safesearch": "true", "orientation": orient})
+            "per_page": 12, "safesearch": "true", "orientation": orient})
         hits = r.json().get("hits", []) if r.ok else []
         hits = [h for h in hits if h["largeImageURL"] not in USED_URLS]
+        # Pixabay tags are loose, so only accept a photo whose tags name this mosque
+        if keys:
+            hits = [h for h in hits if matches(h.get("tags", ""), keys)]
         if hits:
             return random.choice(hits[:4])["largeImageURL"], "Photo from Pixabay (pixabay.com)"
     return None
 
 
-def get_photo(queries, path):
+def get_photo(queries, path, keys):
     if isinstance(queries, str):
         queries = [queries]
     for q in queries:
         for finder in (commons_photo, pixabay_photo):
             try:
-                found = finder(q)
+                found = finder(q, keys)
                 if found:
                     data = requests.get(found[0], headers=UA, timeout=90)
                     data.raise_for_status()
@@ -291,7 +332,6 @@ def youtube_upload(video_path, meta, thumb_path=None):
     if not (cid and secret and refresh):
         print("YouTube secrets not set, skipping upload.")
         return None
-
     tok = requests.post("https://oauth2.googleapis.com/token", data={
         "client_id": cid, "client_secret": secret,
         "refresh_token": refresh, "grant_type": "refresh_token"}, timeout=60)
@@ -308,7 +348,6 @@ def youtube_upload(video_path, meta, thumb_path=None):
     desc = meta["description"].replace("<", "").replace(">", "")
     while len(desc.encode("utf-8")) > 4800:
         desc = desc[:-200]
-
     body = {
         "snippet": {"title": meta["title"].replace("<", "").replace(">", "")[:100],
                     "description": desc, "tags": tags, "categoryId": "27",
@@ -328,7 +367,6 @@ def youtube_upload(video_path, meta, thumb_path=None):
     if not init.ok:
         raise RuntimeError(f"YouTube init failed: {init.status_code} {init.text[:300]}")
     location = init.headers["Location"]
-
     with open(video_path, "rb") as f:
         up = requests.put(location, data=f, headers={"Content-Type": "video/mp4",
                                                      "Content-Length": str(size)}, timeout=1200)
@@ -336,7 +374,6 @@ def youtube_upload(video_path, meta, thumb_path=None):
         raise RuntimeError(f"YouTube upload failed: {up.status_code} {up.text[:300]}")
     vid = up.json().get("id")
     print("Uploaded: https://www.youtube.com/watch?v=" + str(vid))
-
     if thumb_path and vid and pathlib.Path(thumb_path).exists():
         try:
             tr = requests.post(
@@ -361,14 +398,18 @@ def main():
     data = gemini(make_prompt(used))
     scenes = data["scenes"]
     assert len(scenes) >= 3, "Gemini returned too few scenes"
-    print("Topic:", data["topic"], "| scenes:", len(scenes))
-
+    mosque = data.get("mosque") or data["topic"]
+    data["topic"] = mosque
+    keys = name_keys(mosque)
+    print("Topic:", mosque, "| scenes:", len(scenes), "| photo keys:", keys)
     font = find_font()
+
     # voice first, so we know the real length
     for i, sc in enumerate(scenes):
         sc["audio"] = TMP / f"a{i}.mp3"
         tts(sc.get("speech") or sc["text"], sc["audio"])
         sc["dur"] = duration(sc["audio"])
+
     # keep the final video under 3 minutes: drop middle scenes if too long
     while len(scenes) > 4 and sum(sc["dur"] + 0.5 for sc in scenes) > MAX_SECONDS:
         scenes.pop(len(scenes) // 2)
@@ -376,17 +417,30 @@ def main():
 
     clips, credits = [], []
     thumb_photo = None
+    good_photos = []  # photos of this mosque already found; reused if a scene finds no new one
     for i, sc in enumerate(scenes):
         print(f"Scene {i + 1}/{len(scenes)}")
         photo = TMP / f"p{i}.jpg"
-        queries = [q for q in (sc.get("search"), sc.get("search2"), data["topic"]) if q]
-        credit = get_photo(queries, photo)
-        if credit and thumb_photo is None:
-            thumb_photo = photo
-        if credit and credit not in credits:
-            credits.append(credit)
+        queries = []
+        for q in (sc.get("search"), sc.get("search2"), mosque, mosque + " exterior",
+                  mosque + " interior", mosque + " minaret", mosque + " courtyard"):
+            if q and q not in queries:
+                queries.append(q)
+        credit = get_photo(queries, photo, keys)
+        use_photo = None
+        if credit:
+            use_photo = photo
+            good_photos.append(photo)
+            if thumb_photo is None:
+                thumb_photo = photo
+            if credit not in credits:
+                credits.append(credit)
+        elif good_photos:
+            # never show a wrong place: reuse another photo of the same mosque
+            use_photo = random.choice(good_photos)
+            print("  no new photo of this mosque, reusing an earlier one")
         bg, cap, clip = TMP / f"bg{i}.jpg", TMP / f"cap{i}.png", TMP / f"s{i}.mp4"
-        make_bg(photo if credit else None, bg)
+        make_bg(use_photo, bg)
         caption_png(sc["text"], cap, font)
         build_scene(bg, cap, sc["audio"], sc["dur"], clip)
         clips.append(clip)
